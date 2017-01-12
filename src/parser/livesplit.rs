@@ -6,8 +6,7 @@ use std::path::PathBuf;
 use base64;
 use sxd_document::dom::Element;
 use sxd_document::parser::{Error as XmlError, parse as parse_xml};
-use sxd_xpath::{EvaluationContext, Error as XPathError, Expression, Factory, Functions,
-                Namespaces, Variables, Value};
+use sxd_xpath::{Context, ExecutionError as XPathError, XPath, Factory, Value};
 use sxd_xpath::nodeset::Node;
 use chrono::{DateTime, UTC, TimeZone, ParseError as ChronoError};
 use super::bom_consumer::BomConsumer;
@@ -47,50 +46,34 @@ pub type Result<T> = StdResult<T, Error>;
 #[derive(Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
 struct Version(u32, u32, u32, u32);
 
-struct Evaluator<'d> {
-    functions: Functions,
-    variables: Variables<'d>,
-    namespaces: Namespaces,
+struct Evaluator {
+    context: Context<'static>,
     factory: Factory,
 }
 
-impl<'d> Evaluator<'d> {
+impl Evaluator {
     fn new() -> Self {
         Evaluator {
-            functions: Functions::new(),
-            variables: Variables::new(),
-            namespaces: Namespaces::new(),
+            context: Context::new(),
             factory: Factory::new(),
         }
     }
 
-    fn context<'a, N>(&'a self, node: N) -> EvaluationContext<'a, 'd>
-        where N: Into<Node<'d>>
-    {
-        EvaluationContext::new(node, &self.functions, &self.variables, &self.namespaces)
-    }
-
-    fn xpath(&self, xpath: &str) -> Box<Expression + 'static> {
+    fn xpath(&self, xpath: &str) -> XPath {
         self.factory.build(xpath).unwrap().unwrap()
     }
 
-    fn eval<N>(&self, node: N, xpath: &str) -> Result<Value<'d>>
+    fn eval<'d, N>(&self, node: N, xpath: &str) -> Result<Value<'d>>
         where N: Into<Node<'d>>
     {
-        evaluate(self.context(node), self.xpath(xpath)).map_err(Into::into)
+        self.xpath(xpath).evaluate(&self.context, node).map_err(Into::into)
     }
 
-    fn element<N>(&self, node: N, xpath: &str) -> Result<Element<'d>>
+    fn element<'d, N>(&self, node: N, xpath: &str) -> Result<Element<'d>>
         where N: Into<Node<'d>>
     {
         self.eval(node, xpath).and_then(element)
     }
-}
-
-fn evaluate<'a, 'd>(context: EvaluationContext<'a, 'd>,
-                    xpath: Box<Expression + 'static>)
-                    -> StdResult<Value<'d>, XPathError> {
-    xpath.evaluate(&context).map_err(Into::into)
 }
 
 fn node(value: Value) -> Result<Node> {
@@ -134,10 +117,12 @@ fn time_span_opt<'a, E: Borrow<Element<'a>>>(element: E,
 }
 
 #[allow(unknown_lints, needless_lifetimes)]
-fn time<'d, E: Into<Node<'d>> + Copy>(evaluator: &Evaluator<'d>,
-                                      element: E,
-                                      buf: &mut String)
-                                      -> Result<Time> {
+fn time<'d, E>(evaluator: &Evaluator,
+                       element: E,
+                       buf: &mut String)
+                       -> Result<Time>
+    where E: Into<Node<'d>> + Copy
+{
     let mut time = Time::new();
 
     if let Ok(element) = evaluator.element(element, "RealTime") {
@@ -190,12 +175,14 @@ fn parse_date_time<S: AsRef<str>>(text: S) -> Result<DateTime<UTC>> {
     UTC.datetime_from_str(text.as_ref(), "%m/%d/%Y %T").map_err(Into::into)
 }
 
-fn parse_attempt_history<'d, E: Into<Node<'d>>>(eval: &Evaluator<'d>,
-                                                version: Version,
-                                                node: E,
-                                                run: &mut Run,
-                                                buf: &mut String)
-                                                -> Result<()> {
+fn parse_attempt_history<'d, E>(eval: &Evaluator,
+                                version: Version,
+                                node: E,
+                                run: &mut Run,
+                                buf: &mut String)
+                                -> Result<()>
+    where E: Into<Node<'d>>
+{
     if version >= Version(1, 5, 0, 0) {
         let attempt_history = eval.element(node, "AttemptHistory")?;
         for attempt in attempt_history.children().into_iter().filter_map(|c| c.element()) {
