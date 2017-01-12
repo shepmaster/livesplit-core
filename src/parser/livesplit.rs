@@ -78,7 +78,7 @@ impl Evaluator {
 
 fn node(value: Value) -> Result<Node> {
     if let Value::Nodeset(set) = value {
-        set.document_order_first().ok_or(Error::NodeNotFound)
+        set.iter().next().ok_or(Error::NodeNotFound)
     } else {
         Err(Error::NodeNotFound)
     }
